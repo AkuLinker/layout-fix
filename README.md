@@ -65,7 +65,7 @@ the selection has no letters at all (only digits/punctuation), the tool
 shows a notice instead of guessing.
 
 The character table itself is a straight physical-key mapping between the
-`us` and `ru(winkeys)` XKB layouts — not a heuristic. Letters convert
+`us` and `ru` XKB layouts — not a heuristic. Letters convert
 fully; punctuation that shares a key with a Cyrillic letter (`, . ; ' [ ]
 \`` etc.) converts too; symbols identical on both layouts (`% * ( ) - _ =
 +`, digits) are left untouched, since they simply aren't in the table.
