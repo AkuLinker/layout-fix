@@ -16,7 +16,7 @@ text, press a hotkey, paste the corrected version.
 2. You press a hotkey.
 3. The tool reads the selection, detects whether it's more Latin or
    Cyrillic letters, and converts it character-by-character using a table
-   derived directly from the `us` / `ru(winkeys)` XKB layouts.
+   derived directly from the `us` / `ru` XKB layouts.
 4. The result goes into the clipboard, and a native KDE OSD (the same
    widget used for layout-switch/volume popups) briefly shows a preview.
 5. You paste it yourself with Ctrl+V, replacing the still-selected text.
