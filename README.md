@@ -4,10 +4,10 @@ Hotkey utility for KDE Wayland that fixes text typed in the wrong keyboard
 layout (EN/RU) — no background daemon, no keylogging. Select the garbled
 text, press a hotkey, paste the corrected version.
 
-> **⚠️ Only supports the EN (US) ↔ RU (winkeys) layout pair.** Any other
+> **⚠️ Only supports the EN ↔ RU layout pair.** Any other
 > layout combination will produce garbage.
 >
-> **⚠️ Работает только с парой раскладок EN (US) ↔ RU (winkeys).** С любой
+> **⚠️ Работает только с парой раскладок EN ↔ RU.** С любой
 > другой раскладкой результат будет нечитаемой кашей.
 
 ## How it works
