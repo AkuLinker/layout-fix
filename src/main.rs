@@ -8,7 +8,7 @@ const OSD_PATH: &str = "/org/kde/osdService";
 const OSD_IFACE: &str = "org.kde.osdService";
 
 fn show_osd(icon: &str, text: &str) {
-    // Not critical if this fails — silently drop the notification, don't crash.
+    // Не критично, если не получится — молча теряем уведомление, не роняем программу.
     if let Ok(session) = Connection::session() {
         let _ = session.call_method(
             Some(OSD_DEST),
@@ -20,7 +20,7 @@ fn show_osd(icon: &str, text: &str) {
     }
 }
 
-/// Reads the PRIMARY selection (whatever is highlighted with the mouse/Shift+arrows).
+/// Читает PRIMARY selection (то, что выделено мышкой/Shift+стрелками).
 fn read_primary_selection() -> Option<String> {
     let output = Command::new("wl-paste")
         .arg("--primary")
@@ -40,12 +40,24 @@ fn read_primary_selection() -> Option<String> {
     }
 }
 
-/// Puts text into the regular clipboard (not PRIMARY) via wl-copy.
+/// Кладёт текст в обычный буфер обмена (не PRIMARY) через wl-copy.
 fn write_clipboard(text: &str) -> std::io::Result<()> {
-    let mut child = Command::new("wl-copy").stdin(Stdio::piped()).spawn()?;
-    if let Some(stdin) = child.stdin.as_mut() {
+    let mut child = Command::new("wl-copy")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+
+    if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(text.as_bytes())?;
+        // stdin (пишущий конец пайпа) закрывается тут же, в конце этого
+        // блока — это отправляет EOF в wl-copy. Без явного закрытия
+        // (как было раньше, через .as_mut() — только заимствование, канал
+        // остаётся открытым, пока жив весь `child`) wl-copy бесконечно
+        // ждёт ещё данных и не может форкнуться в фон, а мы всё это время
+        // висим на child.wait() ниже.
     }
+
     child.wait()?;
     Ok(())
 }
@@ -64,9 +76,9 @@ enum Direction {
     RuToEn,
 }
 
-/// Determines the conversion direction by the majority of letters in the text.
-/// Returns None if there are no letters at all (only punctuation/digits) —
-/// in that case direction is fundamentally undecidable, so we don't guess.
+/// Определяет направление конвертации по большинству букв в тексте.
+/// Возвращает None, если букв нет вообще (только пунктуация/цифры) — тогда
+/// направление принципиально не определить, и лучше не гадать.
 fn detect_direction(text: &str) -> Option<Direction> {
     let mut latin = 0usize;
     let mut cyrillic = 0usize;
@@ -264,14 +276,14 @@ fn ru_to_en(c: char) -> char {
 
 fn main() {
     let Some(selected) = read_primary_selection() else {
-        show_osd("edit-select-none", "Nothing to convert — no selection");
+        show_osd("edit-select-none", "Нечего переводить — ничего не выделено");
         return;
     };
 
     let Some(direction) = detect_direction(&selected) else {
         show_osd(
             "dialog-question",
-            "Could not detect language — no letters in selection",
+            "Не удалось определить язык — нет букв в выделении",
         );
         return;
     };
@@ -279,8 +291,8 @@ fn main() {
     let converted = convert(&selected, &direction);
 
     if let Err(e) = write_clipboard(&converted) {
-        eprintln!("[layout-fix] failed to write to clipboard: {e}");
-        show_osd("dialog-error", "Error: failed to write to clipboard");
+        eprintln!("[layout-fix] не удалось записать в буфер обмена: {e}");
+        show_osd("dialog-error", "Ошибка: не удалось записать в буфер обмена");
         return;
     }
 
@@ -300,7 +312,7 @@ mod tests {
 
     #[test]
     fn en_to_ru_basic_word() {
-        // "hands" typed on a US layout while meaning Russian "руки" -> "руки"
+        // "руки" по-русски, но набрано на английской раскладке -> "герш"
         let converted = convert("herb", &Direction::EnToRu);
         assert_eq!(converted, "руки");
     }
@@ -313,18 +325,18 @@ mod tests {
 
     #[test]
     fn punctuation_and_digits_untouched() {
-        // Digits, spaces, and symbols identical on both layouts stay untouched
+        // Цифры, пробелы, и символы, которые совпадают в обеих раскладках, не трогаем
         let converted = convert("test 123 (ok) *5*", &Direction::EnToRu);
         assert_eq!(converted, "еуые 123 (щл) *5*");
     }
 
     #[test]
     fn comma_and_period_direction_dependent() {
-        // EN->RU: comma and period turn into the letters б/ю
+        // При EN->RU запятая и точка превращаются в буквы б/ю
         assert_eq!(convert(",", &Direction::EnToRu), "б");
         assert_eq!(convert(".", &Direction::EnToRu), "ю");
-        // RU->EN: period and comma (from the RU key that winkeys remaps to
-        // AB10) turn into / and ?
+        // При RU->EN точка и запятая (с русской раскладки, там где winkeys
+        // перевесил AB10) превращаются в / и ?
         assert_eq!(convert(".", &Direction::RuToEn), "/");
         assert_eq!(convert(",", &Direction::RuToEn), "?");
     }
@@ -337,8 +349,8 @@ mod tests {
 
     #[test]
     fn roundtrip_all_ascii_printable() {
-        // Every character present in the en_to_ru table must return to where
-        // it came from when converted back through ru_to_en.
+        // Каждый символ, который есть в таблице en_to_ru, должен при обратном
+        // преобразовании (ru_to_en) вернуться туда же, откуда пришёл.
         for c in ('!'..='~').chain(std::iter::once(' ')) {
             let ru = en_to_ru(c);
             if ru != c {
@@ -365,9 +377,9 @@ mod tests {
     #[test]
     fn other_scripts_and_emoji_untouched() {
         let converted = convert("日本語 🎉 café", &Direction::EnToRu);
-        // 'a' and 'e' in café are Latin letters, so they do get converted
-        // (expected — we don't distinguish "French e" from "English e"),
-        // but the CJK characters and emoji should stay untouched.
+        // 'a', 'e' в café — латинские буквы, они будут сконвертированы
+        // (это ожидаемо: мы не различаем "французское e" от "английского e"),
+        // а вот сам иероглиф и эмодзи должны остаться как есть.
         assert!(converted.contains('日'));
         assert!(converted.contains('本'));
         assert!(converted.contains('語'));
