@@ -1,9 +1,12 @@
 [package]
 name = "layout-fix"
-version = "1.0.1"
+version = "1.1.0"
 edition = "2024"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+rust-version = "1.85"
+description = "KDE Wayland hotkey utility that fixes text typed in the wrong keyboard layout"
+license = "MIT"
+repository = "https://github.com/AkuLinker/layout-fix"
 
 [dependencies]
 zbus = { version = ">=3" }
+xkbcommon = { version = "0.9", default-features = false }

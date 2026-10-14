@@ -1,109 +1,79 @@
-use std::io::Write;
-use std::process::{Command, Stdio};
+mod clipboard;
+mod kde;
+mod layout;
 
-use zbus::blocking::Connection;
+use std::process::ExitCode;
+use std::thread;
+use std::time::Duration;
 
-const OSD_DEST: &str = "org.kde.plasmashell";
-const OSD_PATH: &str = "/org/kde/osdService";
-const OSD_IFACE: &str = "org.kde.osdService";
+use kde::Kde;
+use layout::{Converter, Layout, LayoutSpec};
 
-fn show_osd(icon: &str, text: &str) {
-    // Not critical if this fails — silently drop the notification, don't crash the program.
-    if let Ok(session) = Connection::session() {
-        let _ = session.call_method(
-            Some(OSD_DEST),
-            OSD_PATH,
-            Some(OSD_IFACE),
-            "showText",
-            &(icon, text),
-        );
-    }
+const USAGE: &str = "\
+Usage: layout-fix [OPTIONS]
+
+Converts the selected text typed in the wrong keyboard layout and puts the
+result into the clipboard.
+
+Options:
+      --paste             Paste the result automatically (needs ydotool and a
+                          running ydotoold) and restore the previous clipboard
+      --paste-delay <MS>  Wait before pasting, so you can release the hotkey
+                          [default: 150]
+      --switch-layout     Switch the active keyboard layout to the one the text
+                          was converted into
+  -h, --help              Show this help
+  -V, --version           Show the version
+";
+
+const DEFAULT_PASTE_DELAY: Duration = Duration::from_millis(150);
+/// How long the target app gets to fetch the pasted text before we put the
+/// old clipboard back. Restoring too early makes it paste the old content.
+const RESTORE_DELAY: Duration = Duration::from_millis(300);
+
+struct Options {
+    paste: bool,
+    paste_delay: Duration,
+    switch_layout: bool,
 }
 
-/// Reads the PRIMARY selection (whatever is selected with the mouse/Shift+arrows).
-fn read_primary_selection() -> Option<String> {
-    let output = Command::new("wl-paste")
-        .arg("--primary")
-        .arg("--no-newline")
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let text = String::from_utf8_lossy(&output.stdout).to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+enum Cli {
+    Run(Options),
+    Help,
+    Version,
 }
 
-/// Puts text into the regular clipboard (not PRIMARY) via wl-copy.
-fn write_clipboard(text: &str) -> std::io::Result<()> {
-    let mut child = Command::new("wl-copy")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(text.as_bytes())?;
-        // stdin (the writing end of the pipe) is closed right here, at the
-        // end of this block — that sends EOF to wl-copy. Without an explicit
-        // close (as it was before, via .as_mut() — just a borrow, the pipe
-        // stays open as long as `child` is alive) wl-copy waits forever
-        // for more data and can't fork into the background, while we sit
-        // blocked on child.wait() below.
-    }
-
-    child.wait()?;
-    Ok(())
+fn parse_ms(value: &str) -> Result<Duration, String> {
+    value
+        .parse::<u64>()
+        .map(Duration::from_millis)
+        .map_err(|_| format!("invalid --paste-delay value: {value:?} (expected milliseconds)"))
 }
 
-fn is_cyrillic_letter(c: char) -> bool {
-    matches!(c, '\u{0400}'..='\u{04FF}')
-}
-
-fn is_latin_letter(c: char) -> bool {
-    c.is_ascii_alphabetic()
-}
-
-#[derive(Debug, PartialEq)]
-enum Direction {
-    EnToRu,
-    RuToEn,
-}
-
-/// Determines the conversion direction based on the majority of letters in the text.
-/// Returns None if there are no letters at all (only punctuation/digits) — in that
-/// case the direction can't be determined in principle, so it's better not to guess.
-fn detect_direction(text: &str) -> Option<Direction> {
-    let mut latin = 0usize;
-    let mut cyrillic = 0usize;
-    for c in text.chars() {
-        if is_latin_letter(c) {
-            latin += 1;
-        } else if is_cyrillic_letter(c) {
-            cyrillic += 1;
+fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
+    let mut opts = Options {
+        paste: false,
+        paste_delay: DEFAULT_PASTE_DELAY,
+        switch_layout: false,
+    };
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--paste" => opts.paste = true,
+            "--switch-layout" => opts.switch_layout = true,
+            "--paste-delay" => {
+                let value = args.next().ok_or("--paste-delay needs a value in milliseconds")?;
+                opts.paste_delay = parse_ms(&value)?;
+            }
+            "-h" | "--help" => return Ok(Cli::Help),
+            "-V" | "--version" => return Ok(Cli::Version),
+            other => match other.strip_prefix("--paste-delay=") {
+                Some(value) => opts.paste_delay = parse_ms(value)?,
+                None => return Err(format!("unknown argument: {other}")),
+            },
         }
     }
-    if latin == 0 && cyrillic == 0 {
-        None
-    } else if latin >= cyrillic {
-        Some(Direction::EnToRu)
-    } else {
-        Some(Direction::RuToEn)
-    }
-}
-
-fn convert(text: &str, direction: &Direction) -> String {
-    let f: fn(char) -> char = match direction {
-        Direction::EnToRu => en_to_ru,
-        Direction::RuToEn => ru_to_en,
-    };
-    text.chars().map(f).collect()
+    Ok(Cli::Run(opts))
 }
 
 fn preview(text: &str, max_chars: usize) -> String {
@@ -114,275 +84,142 @@ fn preview(text: &str, max_chars: usize) -> String {
     s
 }
 
-fn en_to_ru(c: char) -> char {
-    match c {
-        '`' => 'ё',
-        '~' => 'Ё',
-        '@' => '"',
-        '#' => '№',
-        '$' => ';',
-        '^' => ':',
-        '&' => '?',
-        'q' => 'й',
-        'Q' => 'Й',
-        'w' => 'ц',
-        'W' => 'Ц',
-        'e' => 'у',
-        'E' => 'У',
-        'r' => 'к',
-        'R' => 'К',
-        't' => 'е',
-        'T' => 'Е',
-        'y' => 'н',
-        'Y' => 'Н',
-        'u' => 'г',
-        'U' => 'Г',
-        'i' => 'ш',
-        'I' => 'Ш',
-        'o' => 'щ',
-        'O' => 'Щ',
-        'p' => 'з',
-        'P' => 'З',
-        '[' => 'х',
-        '{' => 'Х',
-        ']' => 'ъ',
-        '}' => 'Ъ',
-        'a' => 'ф',
-        'A' => 'Ф',
-        's' => 'ы',
-        'S' => 'Ы',
-        'd' => 'в',
-        'D' => 'В',
-        'f' => 'а',
-        'F' => 'А',
-        'g' => 'п',
-        'G' => 'П',
-        'h' => 'р',
-        'H' => 'Р',
-        'j' => 'о',
-        'J' => 'О',
-        'k' => 'л',
-        'K' => 'Л',
-        'l' => 'д',
-        'L' => 'Д',
-        ';' => 'ж',
-        ':' => 'Ж',
-        '\'' => 'э',
-        '"' => 'Э',
-        '|' => '/',
-        'z' => 'я',
-        'Z' => 'Я',
-        'x' => 'ч',
-        'X' => 'Ч',
-        'c' => 'с',
-        'C' => 'С',
-        'v' => 'м',
-        'V' => 'М',
-        'b' => 'и',
-        'B' => 'И',
-        'n' => 'т',
-        'N' => 'Т',
-        'm' => 'ь',
-        'M' => 'Ь',
-        ',' => 'б',
-        '<' => 'Б',
-        '.' => 'ю',
-        '>' => 'Ю',
-        '/' => '.',
-        '?' => ',',
-        _ => c,
-    }
+fn build_converter(kde: &Kde) -> Option<Converter> {
+    let specs = kde
+        .layout_specs()
+        .unwrap_or_else(|| vec![LayoutSpec::new("us", ""), LayoutSpec::new("ru", "")]);
+    Converter::new(Layout::compile_all(specs))
 }
 
-fn ru_to_en(c: char) -> char {
-    match c {
-        'ё' => '`',
-        'Ё' => '~',
-        '"' => '@',
-        '№' => '#',
-        ';' => '$',
-        ':' => '^',
-        '?' => '&',
-        'й' => 'q',
-        'Й' => 'Q',
-        'ц' => 'w',
-        'Ц' => 'W',
-        'у' => 'e',
-        'У' => 'E',
-        'к' => 'r',
-        'К' => 'R',
-        'е' => 't',
-        'Е' => 'T',
-        'н' => 'y',
-        'Н' => 'Y',
-        'г' => 'u',
-        'Г' => 'U',
-        'ш' => 'i',
-        'Ш' => 'I',
-        'щ' => 'o',
-        'Щ' => 'O',
-        'з' => 'p',
-        'З' => 'P',
-        'х' => '[',
-        'Х' => '{',
-        'ъ' => ']',
-        'Ъ' => '}',
-        'ф' => 'a',
-        'Ф' => 'A',
-        'ы' => 's',
-        'Ы' => 'S',
-        'в' => 'd',
-        'В' => 'D',
-        'а' => 'f',
-        'А' => 'F',
-        'п' => 'g',
-        'П' => 'G',
-        'р' => 'h',
-        'Р' => 'H',
-        'о' => 'j',
-        'О' => 'J',
-        'л' => 'k',
-        'Л' => 'K',
-        'д' => 'l',
-        'Д' => 'L',
-        'ж' => ';',
-        'Ж' => ':',
-        'э' => '\'',
-        'Э' => '"',
-        '/' => '|',
-        'я' => 'z',
-        'Я' => 'Z',
-        'ч' => 'x',
-        'Ч' => 'X',
-        'с' => 'c',
-        'С' => 'C',
-        'м' => 'v',
-        'М' => 'V',
-        'и' => 'b',
-        'И' => 'B',
-        'т' => 'n',
-        'Т' => 'N',
-        'ь' => 'm',
-        'Ь' => 'M',
-        'б' => ',',
-        'Б' => '<',
-        'ю' => '.',
-        'Ю' => '>',
-        '.' => '/',
-        ',' => '?',
-        _ => c,
-    }
-}
-
-fn main() {
-    let Some(selected) = read_primary_selection() else {
-        show_osd("edit-select-none", "Nothing to convert — nothing selected");
+fn run(opts: &Options, kde: &Kde) {
+    let Some(selected) = clipboard::read_primary() else {
+        kde.osd("edit-select-none", "Nothing to convert — nothing selected");
         return;
     };
 
-    let Some(direction) = detect_direction(&selected) else {
-        show_osd(
+    let Some(converter) = build_converter(kde) else {
+        kde.osd("dialog-error", "Need at least two keyboard layouts to convert between");
+        return;
+    };
+
+    let active = kde.active_layout();
+    let Some(conversion) = converter.convert(&selected, active) else {
+        kde.osd(
             "dialog-question",
             "Couldn't detect the language — no letters in the selection",
         );
         return;
     };
 
-    let converted = convert(&selected, &direction);
+    // Save the clipboard before overwriting it, but only when we paste
+    // ourselves: otherwise the user still needs the result in the clipboard.
+    let snapshot = opts.paste.then(clipboard::snapshot);
 
-    if let Err(e) = write_clipboard(&converted) {
+    if let Err(e) = clipboard::write_text(&conversion.text) {
         eprintln!("[layout-fix] failed to write to clipboard: {e}");
-        show_osd("dialog-error", "Error: failed to write to clipboard");
+        kde.osd("dialog-error", "Error: failed to write to clipboard");
         return;
     }
 
-    let arrow = match direction {
-        Direction::EnToRu => "EN→RU",
-        Direction::RuToEn => "RU→EN",
+    let mut paste_failed = false;
+    if let Some(snapshot) = snapshot {
+        thread::sleep(opts.paste_delay);
+        match clipboard::send_paste() {
+            Ok(()) => {
+                thread::sleep(RESTORE_DELAY);
+                if let Err(e) = clipboard::restore(&snapshot) {
+                    eprintln!("[layout-fix] failed to restore the clipboard: {e}");
+                }
+            }
+            Err(e) => {
+                // Leave the converted text in the clipboard so Ctrl+V still works.
+                eprintln!("[layout-fix] auto-paste failed: {e}");
+                paste_failed = true;
+            }
+        }
+    }
+
+    // After pasting: switching first could change what the target app sees.
+    if opts.switch_layout && active != Some(conversion.final_target) {
+        if !kde.set_layout(conversion.final_target) {
+            eprintln!("[layout-fix] failed to switch the keyboard layout");
+        }
+    }
+
+    if paste_failed {
+        kde.osd(
+            "dialog-error",
+            "Auto-paste failed (is ydotoold running?) — press Ctrl+V",
+        );
+    } else {
+        kde.osd(
+            "input-keyboard",
+            &format!("{}: {}", conversion.summary(), preview(&conversion.text, 40)),
+        );
+    }
+}
+
+fn main() -> ExitCode {
+    let opts = match parse_args(std::env::args().skip(1)) {
+        Ok(Cli::Run(opts)) => opts,
+        Ok(Cli::Help) => {
+            print!("{USAGE}");
+            return ExitCode::SUCCESS;
+        }
+        Ok(Cli::Version) => {
+            println!("layout-fix {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Err(e) => {
+            eprintln!("layout-fix: {e}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
     };
-    show_osd(
-        "input-keyboard",
-        &format!("{arrow}: {}", preview(&converted, 40)),
-    );
+
+    run(&opts, &Kde::connect());
+    ExitCode::SUCCESS
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn en_to_ru_basic_word() {
-        // "руки" ("hands" in Russian) typed on an English layout -> "herb"
-        let converted = convert("herb", &Direction::EnToRu);
-        assert_eq!(converted, "руки");
+    fn parse(args: &[&str]) -> Result<Cli, String> {
+        parse_args(args.iter().map(|s| s.to_string()))
     }
 
     #[test]
-    fn ru_to_en_basic_word() {
-        let converted = convert("руки", &Direction::RuToEn);
-        assert_eq!(converted, "herb");
+    fn no_flags_is_the_old_behaviour() {
+        let Ok(Cli::Run(o)) = parse(&[]) else { panic!() };
+        assert!(!o.paste && !o.switch_layout);
+        assert_eq!(o.paste_delay, DEFAULT_PASTE_DELAY);
     }
 
     #[test]
-    fn punctuation_and_digits_untouched() {
-        // Digits, spaces, and characters that match in both layouts are left untouched
-        let converted = convert("test 123 (ok) *5*", &Direction::EnToRu);
-        assert_eq!(converted, "еуые 123 (щл) *5*");
+    fn all_flags() {
+        let Ok(Cli::Run(o)) = parse(&["--paste", "--switch-layout", "--paste-delay", "300"]) else {
+            panic!()
+        };
+        assert!(o.paste && o.switch_layout);
+        assert_eq!(o.paste_delay, Duration::from_millis(300));
     }
 
     #[test]
-    fn comma_and_period_direction_dependent() {
-        // For EN->RU, comma and period turn into the letters б/ю
-        assert_eq!(convert(",", &Direction::EnToRu), "б");
-        assert_eq!(convert(".", &Direction::EnToRu), "ю");
-        // For RU->EN, period and comma (from the Russian layout, where
-        // winkeys remaps AB10) turn into / and ?
-        assert_eq!(convert(".", &Direction::RuToEn), "/");
-        assert_eq!(convert(",", &Direction::RuToEn), "?");
+    fn paste_delay_with_equals() {
+        let Ok(Cli::Run(o)) = parse(&["--paste-delay=50"]) else { panic!() };
+        assert_eq!(o.paste_delay, Duration::from_millis(50));
     }
 
     #[test]
-    fn semicolon_pair() {
-        assert_eq!(convert(";", &Direction::EnToRu), "ж");
-        assert_eq!(convert("ж", &Direction::RuToEn), ";");
+    fn bad_arguments() {
+        assert!(parse(&["--nope"]).is_err());
+        assert!(parse(&["--paste-delay"]).is_err());
+        assert!(parse(&["--paste-delay", "soon"]).is_err());
     }
 
     #[test]
-    fn roundtrip_all_ascii_printable() {
-        // Every character present in the en_to_ru table should, when converted
-        // back (ru_to_en), return to exactly where it came from.
-        for c in ('!'..='~').chain(std::iter::once(' ')) {
-            let ru = en_to_ru(c);
-            if ru != c {
-                let back = ru_to_en(ru);
-                assert_eq!(back, c, "roundtrip failed for {c:?} -> {ru:?} -> {back:?}");
-            }
-        }
-    }
-
-    #[test]
-    fn direction_detection() {
-        assert_eq!(detect_direction("hello world"), Some(Direction::EnToRu));
-        assert_eq!(detect_direction("привет мир"), Some(Direction::RuToEn));
-        assert_eq!(detect_direction("123 456 !@#"), None);
-        assert_eq!(detect_direction(""), None);
-    }
-
-    #[test]
-    fn mixed_case_preserved() {
-        let converted = convert("Herb", &Direction::EnToRu);
-        assert_eq!(converted, "Руки");
-    }
-
-    #[test]
-    fn other_scripts_and_emoji_untouched() {
-        let converted = convert("日本語 🎉 café", &Direction::EnToRu);
-        // 'a', 'e' in café are Latin letters, so they will be converted
-        // (that's expected: we don't distinguish a "French e" from an "English e"),
-        // but the CJK characters and the emoji should stay as they are.
-        assert!(converted.contains('日'));
-        assert!(converted.contains('本'));
-        assert!(converted.contains('語'));
-        assert!(converted.contains('🎉'));
+    fn preview_truncates() {
+        assert_eq!(preview("привет", 3), "при…");
+        assert_eq!(preview("hi", 3), "hi");
     }
 }
