@@ -4,9 +4,8 @@ Hotkey utility for KDE Wayland that fixes text typed in the wrong keyboard
 layout — no background daemon, no keylogging. Select the garbled text,
 press a hotkey, paste the corrected version (or let the tool paste it for you).
 
-Works with whatever layouts you have configured in KDE (EN ↔ RU, EN ↔ UA,
-RU (winkeys) ↔ US, …): the character mapping is read from XKB at runtime,
-not hard-coded.
+Works with whatever layouts you have configured in KDE (EN ↔ RU, EN ↔ UA, …):
+the character mapping is read from XKB at runtime, not hard-coded.
 
 ## Example
 
