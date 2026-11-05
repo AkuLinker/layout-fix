@@ -1,6 +1,7 @@
 mod clipboard;
 mod kde;
 mod layout;
+mod portal;
 
 use std::process::ExitCode;
 use std::thread;
@@ -16,8 +17,8 @@ Converts the selected text typed in the wrong keyboard layout and puts the
 result into the clipboard.
 
 Options:
-      --paste             Paste the result automatically (needs ydotool and a
-                          running ydotoold) and restore the previous clipboard
+      --paste             Paste the result automatically and restore the
+                          previous clipboard (asks for permission the first time)
       --paste-delay <MS>  Wait before pasting, so you can release the hotkey
                           [default: 150]
       --switch-layout     Switch the active keyboard layout to the one the text
@@ -121,10 +122,9 @@ fn run(opts: &Options, kde: &Kde) {
         return;
     }
 
-    let mut paste_failed = false;
+    let mut paste_error = None;
     if let Some(snapshot) = snapshot {
-        thread::sleep(opts.paste_delay);
-        match clipboard::send_paste() {
+        match portal::press_ctrl_v(opts.paste_delay) {
             Ok(()) => {
                 thread::sleep(RESTORE_DELAY);
                 if let Err(e) = clipboard::restore(&snapshot) {
@@ -134,7 +134,7 @@ fn run(opts: &Options, kde: &Kde) {
             Err(e) => {
                 // Leave the converted text in the clipboard so Ctrl+V still works.
                 eprintln!("[layout-fix] auto-paste failed: {e}");
-                paste_failed = true;
+                paste_error = Some(e);
             }
         }
     }
@@ -146,16 +146,19 @@ fn run(opts: &Options, kde: &Kde) {
         }
     }
 
-    if paste_failed {
-        kde.osd(
+    match paste_error {
+        Some(portal::PasteError::Denied) => kde.osd(
+            "dialog-cancel",
+            "Auto-paste not allowed — the result is in the clipboard, press Ctrl+V",
+        ),
+        Some(portal::PasteError::Failed(_)) => kde.osd(
             "dialog-error",
-            "Auto-paste failed (is ydotoold running?) — press Ctrl+V",
-        );
-    } else {
-        kde.osd(
+            "Auto-paste failed — the result is in the clipboard, press Ctrl+V",
+        ),
+        None => kde.osd(
             "input-keyboard",
             &format!("{}: {}", conversion.summary(), preview(&conversion.text, 40)),
-        );
+        ),
     }
 }
 

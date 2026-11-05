@@ -36,11 +36,9 @@ to their history.
   newer is needed to keep the converted text out of clipboard history;
   older versions still work, just without that.
 - `libxkbcommon` and `xkeyboard-config` (already installed with Plasma)
-- Optional, for `--paste`: [`ydotool`](https://github.com/ReimuNotMoe/ydotool)
-  with the `ydotoold` service running, e.g. on Arch:
-  `sudo pacman -S ydotool && systemctl --user enable --now ydotool`.
-  ydotoold needs access to `/dev/uinput`; see your distribution's ydotool
-  documentation if it can't open it.
+- For `--paste`: `xdg-desktop-portal` and `xdg-desktop-portal-kde`
+  (installed with Plasma). Nothing else: pasting goes through the standard
+  RemoteDesktop portal, no extra service or `/dev/uinput` access needed.
 
 ## Install
 
@@ -55,9 +53,14 @@ cargo build --release
 Then:
 
 ```bash
-mkdir -p ~/.local/bin
+mkdir -p ~/.local/bin ~/.local/share/applications
 cp target/release/layout-fix ~/.local/bin/
+cp io.github.akulinker.LayoutFix.desktop ~/.local/share/applications/
 ```
+
+The `.desktop` file is hidden from menus. It gives the tool a fixed
+application ID, which the portal uses to remember the `--paste` permission
+(see below).
 
 Or grab a prebuilt binary from [Releases](../../releases).
 
@@ -82,6 +85,23 @@ You can add several shortcuts with different options.
 
 If nothing gets pasted, or some other shortcut fires instead, your hotkey's
 modifier keys were probably still held down: increase `--paste-delay`.
+
+After changing a shortcut's command, log out and back in if KDE keeps
+running the old one.
+
+### The permission dialog for `--paste`
+
+`--paste` presses Ctrl+V through the RemoteDesktop portal, so the first
+time KDE asks whether layout-fix may control the keyboard. Allow it and
+leave the option to remember the choice checked. The portal then hands out
+a restore token, saved in `~/.local/state/layout-fix/remote-desktop-token`
+(readable only by you), and later presses run without a dialog. Tokens are
+single-use; the tool saves the fresh one after every press.
+
+The dialog shows up again if you uncheck "remember", if the token file is
+deleted, or if the portal rejects the token. To make layout-fix forget the
+permission, delete that file. If you deny the request, the converted text
+stays in the clipboard and you can paste it with Ctrl+V.
 
 ## Character mapping
 
@@ -110,5 +130,3 @@ a notice instead of guessing.
 - With `--paste`, only one format of the previous clipboard is restored:
   plain text for text, or the original type (e.g. `image/png`) for other
   data. Rich formats like HTML are dropped.
-- With `--paste`, restoring happens 300 ms after pasting. An unusually slow
-  app could paste the restored content instead; this is rare.

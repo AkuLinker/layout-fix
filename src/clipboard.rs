@@ -1,4 +1,4 @@
-//! Clipboard access through wl-clipboard, and the optional auto-paste via ydotool.
+//! Clipboard access through wl-clipboard.
 
 use std::io::{self, Write};
 use std::process::{Command, Stdio};
@@ -162,22 +162,6 @@ pub fn restore(snapshot: &Snapshot) -> io::Result<()> {
                 Err(io::Error::other("wl-copy exited with an error"))
             }
         }
-    }
-}
-
-/// Presses Ctrl+V through ydotool (needs the ydotoold service running).
-pub fn send_paste() -> io::Result<()> {
-    // Linux input event codes: KEY_LEFTCTRL = 29, KEY_V = 47.
-    // "code:1" = press, "code:0" = release.
-    let status = Command::new("ydotool")
-        .args(["key", "29:1", "47:1", "47:0", "29:0"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("ydotool exited with {status}")))
     }
 }
 
