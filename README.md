@@ -8,6 +8,10 @@ Works with whatever layouts you have configured in KDE (EN ↔ RU, EN ↔ UA,
 RU (winkeys) ↔ US, …): the character mapping is read from XKB at runtime,
 not hard-coded.
 
+## Example
+
+![layout-fix demo](demo.gif)
+
 ## How it works
 
 1. You select some text (mouse or Shift+arrows) — no need to copy it.
