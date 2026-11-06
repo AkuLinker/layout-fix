@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=layout-fix
-Comment=Fix text typed in the wrong keyboard layout
-Exec=layout-fix
-Icon=input-keyboard
-Terminal=false
-NoDisplay=true

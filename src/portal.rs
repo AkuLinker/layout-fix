@@ -5,14 +5,13 @@
 //! keyboard. If you allow it and keep "remember" checked, the portal gives us
 //! a restore token; we pass it back next time and no dialog is shown.
 //!
-//! Two details make "ask only once" work:
-//! - Restore tokens are single-use. Every successful start returns a fresh
-//!   token, which we save over the old one.
-//! - The permission is stored per application ID. Programs that aren't
-//!   Flatpaks get an ID guessed from how they were launched (empty from a
-//!   terminal, something else from a KDE shortcut), so we register a fixed
-//!   ID first. It has to match a .desktop file name, which the README's
-//!   install steps put in place.
+//! Restore tokens are single-use: every successful start returns a fresh
+//! token, which we save over the old one.
+//!
+//! The portal stores the permission per application ID, which it takes from
+//! how the program was launched. From the KDE shortcut that's the shortcut's
+//! own ID, so the permission is remembered for the hotkey. Started from a
+//! terminal, the tool counts as a different app and may be asked again.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -28,12 +27,8 @@ use std::time::Duration;
 use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
 
-/// Must match the .desktop file installed as `<APP_ID>.desktop`.
-pub const APP_ID: &str = "io.github.akulinker.LayoutFix";
-
 const PORTAL_DEST: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
-const REGISTRY_IFACE: &str = "org.freedesktop.host.portal.Registry";
 const REMOTE_DESKTOP_IFACE: &str = "org.freedesktop.portal.RemoteDesktop";
 const REQUEST_IFACE: &str = "org.freedesktop.portal.Request";
 const SESSION_IFACE: &str = "org.freedesktop.portal.Session";
@@ -97,19 +92,6 @@ struct Portal {
 impl Portal {
     fn connect() -> Result<Self, PasteError> {
         let conn = Connection::session().map_err(failed)?;
-
-        // Has to be the first portal call on this connection.
-        if let Err(e) = conn.call_method(
-            Some(PORTAL_DEST),
-            PORTAL_PATH,
-            Some(REGISTRY_IFACE),
-            "Register",
-            &(APP_ID, HashMap::<&str, Value>::new()),
-        ) {
-            // Older xdg-desktop-portal without the Registry: still works, but
-            // the permission may not be remembered between launch methods.
-            eprintln!("[layout-fix] couldn't register app id with the portal: {e}");
-        }
 
         let sender = conn
             .unique_name()
@@ -351,16 +333,5 @@ mod tests {
         let n = OwnedValue::try_from(Value::from(5u32)).unwrap();
         assert_eq!(as_u32(&n), Some(5));
         assert_eq!(as_string(&n), None);
-    }
-
-    #[test]
-    fn app_id_is_valid() {
-        // App IDs follow D-Bus well-known name rules: dot-separated,
-        // at least two elements, letters/digits/underscore.
-        let parts: Vec<&str> = APP_ID.split('.').collect();
-        assert!(parts.len() >= 2);
-        assert!(parts.iter().all(|p| !p.is_empty()
-            && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-            && !p.starts_with(|c: char| c.is_ascii_digit())));
     }
 }

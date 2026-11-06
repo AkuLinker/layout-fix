@@ -1,6 +1,6 @@
 [package]
 name = "layout-fix"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 rust-version = "1.85"
 description = "KDE Wayland hotkey utility that fixes text typed in the wrong keyboard layout"
@@ -10,3 +10,10 @@ repository = "https://github.com/AkuLinker/layout-fix"
 [dependencies]
 zbus = { version = ">=3" }
 xkbcommon = { version = "0.9", default-features = false }
+
+# Smaller release binary: strip debug symbols and optimize across crates.
+# Makes release builds slower, but they're done rarely.
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

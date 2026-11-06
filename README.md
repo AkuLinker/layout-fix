@@ -4,8 +4,9 @@ Hotkey utility for KDE Wayland that fixes text typed in the wrong keyboard
 layout — no background daemon, no keylogging. Select the garbled text,
 press a hotkey, paste the corrected version (or let the tool paste it for you).
 
-Works with whatever layouts you have configured in KDE (EN ↔ RU, EN ↔ UA, …):
-the character mapping is read from XKB at runtime, not hard-coded.
+Works with whatever layouts and variants you have configured in KDE
+(EN ↔ RU, EN ↔ UA, …): the character mapping is read from XKB at runtime,
+not hard-coded.
 
 ## Example
 
@@ -56,14 +57,9 @@ cargo build --release
 Then:
 
 ```bash
-mkdir -p ~/.local/bin ~/.local/share/applications
+mkdir -p ~/.local/bin
 cp target/release/layout-fix ~/.local/bin/
-cp io.github.akulinker.LayoutFix.desktop ~/.local/share/applications/
 ```
-
-The `.desktop` file is hidden from menus. It gives the tool a fixed
-application ID, which the portal uses to remember the `--paste` permission
-(see below).
 
 Or grab a prebuilt binary from [Releases](../../releases).
 
@@ -85,6 +81,14 @@ You can add several shortcuts with different options.
 | `--paste` | Paste automatically, then restore what was in the clipboard before |
 | `--paste-delay <MS>` | Wait this long before pasting (default 150), so you have time to release the hotkey's modifier keys |
 | `--switch-layout` | Switch the active keyboard layout to the one the text was converted into |
+| `--fix-case` | Also fix words where Shift was held too long (`HEllo` → `Hello`, `CALling` → `Calling`) |
+| `--case-only` | Only fix those words, without changing the layout (useful on its own hotkey) |
+
+Options can be combined, e.g. `layout-fix --paste --fix-case`.
+
+`--fix-case` and `--case-only` only touch words that start with 2 or 3
+uppercase letters followed by at least 2 lowercase ones, so words like
+`TVs`, `URLs` or `NASA` stay as they are.
 
 If nothing gets pasted, or some other shortcut fires instead, your hotkey's
 modifier keys were probably still held down: increase `--paste-delay`.
@@ -106,19 +110,24 @@ deleted, or if the portal rejects the token. To make layout-fix forget the
 permission, delete that file. If you deny the request, the converted text
 stays in the clipboard and you can paste it with Ctrl+V.
 
+The permission belongs to your KDE shortcut. If you run layout-fix from a
+terminal, or delete and re-create the shortcut, the dialog may appear again.
+
 ## Character mapping
 
 Each layout you've configured (read from `~/.config/kxkbrc`, including
 variants) is compiled with libxkbcommon, and the tool records which
-character each key of the main typing block produces, with and without
-Shift. A character is converted by finding its key in the source layout
+character each key of the main typing block produces: alone, with Shift,
+with AltGr and with AltGr+Shift. A character is converted by finding its key in the source layout
 and taking what that key gives in the target layout. Characters that are
 the same in both layouts (digits, `% * ( ) - _ = +`, …) stay the same, and
 anything the source layout can't type — other scripts, emoji, diacritics —
 passes through unchanged.
 
 Direction is decided per word: each word is converted from the layout that
-can type most of its letters. Words without letters (numbers, lone
+can type most of its letters. If a word fits two layouts equally (e.g. `us`
+and `de`), it's assumed to be typed in the currently active layout. Words
+without letters (numbers, lone
 punctuation) follow the nearest word that has letters. With more than two
 layouts, the target is the currently active layout if it differs from the
 source (you've already switched to the one you meant), otherwise the next

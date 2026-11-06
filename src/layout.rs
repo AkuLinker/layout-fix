@@ -2,7 +2,7 @@
 //!
 //! Instead of a hard-coded table, every layout the user has configured is
 //! compiled with libxkbcommon, and we record which character each physical key
-//! produces (with and without Shift). Converting text then means: find which
+//! produces (alone, with Shift, with AltGr and with AltGr+Shift). Converting text then means: find which
 //! key typed a character in the source layout, and look up what the same key
 //! gives in the target layout.
 
@@ -67,21 +67,28 @@ impl Layout {
 
         let mut by_pos = HashMap::new();
         let mut by_char = HashMap::new();
-        for key in typing_keys() {
-            for level in 0..2u32 {
-                let syms = keymap.key_get_syms_by_level(xkb::Keycode::new(key), 0, level);
-                let Some(&sym) = syms.first() else { continue };
-                let Some(c) = char::from_u32(xkb::keysym_to_utf32(sym)) else {
-                    continue;
-                };
-                // keysym_to_utf32 gives 0 for keysyms without a character
-                // (dead keys etc.); '\0' counts as a control character.
-                if c.is_control() {
-                    continue;
+        // Two passes: first every key without and with Shift, then the AltGr
+        // levels (AltGr, AltGr+Shift). Since the first position found for a
+        // character wins, a normal position always beats an AltGr one, and
+        // AltGr only adds characters that aren't on any key otherwise
+        // (e.g. Polish ą on AltGr+A, German @ on AltGr+Q).
+        for levels in [0..2u32, 2..4u32] {
+            for key in typing_keys() {
+                for level in levels.clone() {
+                    let syms = keymap.key_get_syms_by_level(xkb::Keycode::new(key), 0, level);
+                    let Some(&sym) = syms.first() else { continue };
+                    let Some(c) = char::from_u32(xkb::keysym_to_utf32(sym)) else {
+                        continue;
+                    };
+                    // keysym_to_utf32 gives 0 for keysyms without a character
+                    // (dead keys etc.); '\0' counts as a control character.
+                    if c.is_control() {
+                        continue;
+                    }
+                    by_pos.insert((key, level), c);
+                    // If one character sits on two keys, the first one wins.
+                    by_char.entry(c).or_insert((key, level));
                 }
-                by_pos.insert((key, level), c);
-                // If one character sits on two keys, the first one wins.
-                by_char.entry(c).or_insert((key, level));
             }
         }
 
@@ -190,18 +197,24 @@ impl Converter {
         (layouts.len() >= 2).then_some(Self { layouts })
     }
 
-    /// The layout that can type the most letters of this word.
-    /// Ties go to the layout listed first. None if the word has no letters
-    /// any layout knows.
-    fn source_for(&self, word: &str) -> Option<usize> {
-        let mut best: Option<(usize, usize)> = None; // (position, score)
-        for (i, layout) in self.layouts.iter().enumerate() {
-            let score = layout.letter_score(word);
-            if score > best.map_or(0, |(_, s)| s) {
-                best = Some((i, score));
-            }
+    /// The layout that can type the most letters of this word. None if the
+    /// word has no letters any layout knows.
+    ///
+    /// Ties happen with layouts sharing an alphabet (us + de: "hallo" fits
+    /// both). Then the active layout wins, since text typed in the wrong
+    /// layout was usually typed in the one that's still active; otherwise the
+    /// layout listed first. Layouts with different alphabets (us + ru) never
+    /// tie on a word with letters.
+    fn source_for(&self, word: &str, active: Option<usize>) -> Option<usize> {
+        let scores: Vec<usize> = self.layouts.iter().map(|l| l.letter_score(word)).collect();
+        let best = *scores.iter().max()?;
+        if best == 0 {
+            return None;
         }
-        best.map(|(i, _)| i)
+        match active {
+            Some(a) if scores.get(a) == Some(&best) => Some(a),
+            _ => scores.iter().position(|&s| s == best),
+        }
     }
 
     /// With two layouts it's simply "the other one". With more: the active
@@ -225,7 +238,7 @@ impl Converter {
         let mut sources: Vec<Option<usize>> = segments
             .iter()
             .map(|seg| match seg {
-                Segment::Word(w) => self.source_for(w),
+                Segment::Word(w) => self.source_for(w, active),
                 Segment::Space(_) => None,
             })
             .collect();
@@ -408,5 +421,64 @@ mod tests {
         assert_eq!(c.convert("s", None).unwrap().text, "ы");
         // Already switched to Ukrainian: convert into it
         assert_eq!(c.convert("s", Some(2)).unwrap().text, "і");
+    }
+
+    #[test]
+    fn tie_goes_to_the_active_layout() {
+        // "tea" fits both us and de; only the ';' tells the directions apart:
+        // on us it's the key that gives 'ö' on de, on de it's Shift+, which
+        // gives '<' on us.
+        let c = converter(&[("us", ""), ("de", "")]);
+        assert_eq!(c.convert("tea;", None).unwrap().text, "teaö");
+        assert_eq!(c.convert("tea;", Some(0)).unwrap().text, "teaö");
+        assert_eq!(c.convert("tea;", Some(1)).unwrap().text, "tea<");
+    }
+
+    #[test]
+    fn active_layout_doesnt_matter_for_different_alphabets() {
+        let c = us_ru();
+        for active in [None, Some(0), Some(1)] {
+            assert_eq!(c.convert("ghbdtn", active).unwrap().text, "привет");
+            assert_eq!(c.convert("руки", active).unwrap().text, "herb");
+        }
+    }
+
+    #[test]
+    fn altgr_characters_are_known() {
+        let layouts = Layout::compile_all(vec![LayoutSpec::new("pl", ""), LayoutSpec::new("de", "")]);
+        let (pl, de) = (&layouts[0], &layouts[1]);
+        // AC01 (the A key) is keycode 38, AD01 (the Q key) is 24; level 2 = AltGr.
+        assert_eq!(pl.by_char.get(&'ą'), Some(&(38, 2)));
+        assert_eq!(pl.by_char.get(&'a'), Some(&(38, 0)));
+        assert_eq!(de.by_char.get(&'@'), Some(&(24, 2)));
+    }
+
+    #[test]
+    fn normal_positions_beat_altgr() {
+        // Whenever a character can be typed without AltGr, that position
+        // must be the one used for converting it.
+        let specs = ["us", "ru", "de", "pl", "fr", "ua"]
+            .iter()
+            .map(|n| LayoutSpec::new(n, ""))
+            .collect();
+        for layout in Layout::compile_all(specs) {
+            for (&(key, level), &c) in &layout.by_pos {
+                if level < 2 {
+                    let (_, found_level) = layout.by_char[&c];
+                    assert!(
+                        found_level < 2,
+                        "{}: {c:?} on key {key} level {level}, but mapped to level {found_level}",
+                        layout.spec.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn altgr_letter_without_counterpart_passes_through() {
+        // us has nothing on AltGr+A, so 'ą' stays as it is.
+        let c = converter(&[("pl", ""), ("us", "")]);
+        assert_eq!(c.convert("ząb", Some(0)).unwrap().text, "ząb");
     }
 }
